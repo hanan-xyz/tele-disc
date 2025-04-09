@@ -1,0 +1,6 @@
+install 
+telethon 
+python-dotenv 
+requests 
+langdetect
+discord.py
