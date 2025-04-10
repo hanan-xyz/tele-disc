@@ -9,7 +9,12 @@ logger = setup_logging()
 
 # Fungsi untuk memperbarui channel yang dipantau
 async def update_monitored_chats(client):
-    """Memperbarui daftar channel yang dipantau oleh bot."""
+    """
+    Memperbarui daftar channel yang dipantau oleh bot.
+    
+    Args:
+        client: Objek TelegramClient.
+    """
     chats = FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS
     if not chats:
         logger.warning("Tidak ada channel yang dipantau.")
@@ -30,31 +35,34 @@ async def forward_message(event):
         source_username = f"@{event.chat.username}" if event.chat.username else f"Channel ID: {chat_id}"
         logger.debug(f"Memproses pesan {message.id} dari {chat_id}")
 
-        # Menentukan base_message berdasarkan ada/tidaknya teks dan jenis channel
+        translated_text = message.text
         if message.text:
             translated_text = await translate_text(message.text)
-            if chat_id in VIP_CHANNELS:
-                base_message = translated_text  # Hanya teks terjemahan untuk VIP
-            else:
-                base_message = f"{translated_text} - {source_username}"  # Teks + username untuk non-VIP
+            base_message = f"{translated_text} - {source_username}"
         else:
-            if chat_id in VIP_CHANNELS:
-                base_message = "(Tidak ada teks)"  # Tanpa username untuk VIP
-            else:
-                base_message = f"(Tidak ada teks) - {source_username}"  # Dengan username untuk non-VIP
+            base_message = f"(Tidak ada teks) - {source_username}"
 
-        # Mengirim pesan berdasarkan jenis channel
+        # Tentukan opsi pengiriman untuk Telegram
+        send_options = {}
+        if chat_id in VIP_CHANNELS or chat_id in FILTERED_CHANNELS:
+            send_options['link_preview'] = False  # Nonaktifkan pratinjau tautan di Telegram
+
+        # Tentukan apakah pesan Discord harus dibungkus untuk mencegah embed
+        discord_message = base_message
+        if chat_id in VIP_CHANNELS or chat_id in FILTERED_CHANNELS:
+            discord_message = f"{base_message}"  # Bungkus dengan < > untuk mencegah embed di Discord
+
         if chat_id in VIP_CHANNELS:
-            final_message_telegram = f"**{base_message}**"
-            final_message_discord = f"### {base_message}"
-            await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            final_message_telegram = f"{base_message}"
+            final_message_discord = f"### {discord_message}"
+            await event.client.send_message(TARGET_CHANNEL, final_message_telegram, **send_options)
             await send_message_to_discord_thread(final_message_discord)
             logger.info(f"Pesan VIP {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan Discord thread")
         elif chat_id in FILTERED_CHANNELS:
             if message.text and contains_keyword(message.text, KEYWORDS):
                 final_message_telegram = base_message
-                final_message_discord = f"### {base_message}"
-                await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+                final_message_discord = f"### {discord_message}"
+                await event.client.send_message(TARGET_CHANNEL, final_message_telegram, **send_options)
                 await send_message_to_discord_thread(final_message_discord)
                 logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan Discord thread")
             else:
@@ -62,17 +70,25 @@ async def forward_message(event):
         elif chat_id in UNFILTERED_CHANNELS:
             final_message_telegram = base_message
             final_message_discord = f"{base_message}"
-            await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            await event.client.send_message(TARGET_CHANNEL, final_message_telegram, **send_options)
             await send_message_to_discord_thread(final_message_discord)
             logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan Discord thread")
     except Exception as e:
-        logger.error(f"Gagal memproses pesan {message.id}: {str(e)}")
+        logger.critical(f"Gagal memproses pesan {message.id}: {str(e)}")
         for admin in ADMINS:
-            await event.client.send_message(int(admin), f"Galat memproses pesan {message.id} dari {source_username}: {str(e)}\nTeks: {message.text}")
+            try:
+                await event.client.send_message(int(admin), f"Galat memproses pesan {message.id} dari {source_username}: {str(e)}\nTeks: {message.text}")
+            except Exception as send_error:
+                logger.error(f"Gagal mengirim pesan ke admin {admin}: {str(send_error)}")
 
 # Handler perintah admin untuk menambah channel ke FILTERED_CHANNELS
 async def add_filter_channel(event):
-    """Menambahkan channel ke daftar FILTERED_CHANNELS."""
+    """
+    Menambahkan channel ke daftar FILTERED_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -82,7 +98,7 @@ async def add_filter_channel(event):
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
         if channel_id > 0:
-            channel_id = -1000000000000 - channel_id
+            channel_id = -1000000000000 - channel_id  # Konversi ke format channel ID
         if channel_id not in FILTERED_CHANNELS:
             FILTERED_CHANNELS.append(channel_id)
             with open('channels.json', 'w') as f:
@@ -98,7 +114,12 @@ async def add_filter_channel(event):
 
 # Handler perintah admin untuk menambah channel ke UNFILTERED_CHANNELS
 async def add_unfilter_channel(event):
-    """Menambahkan channel ke daftar UNFILTERED_CHANNELS."""
+    """
+    Menambahkan channel ke daftar UNFILTERED_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -124,7 +145,12 @@ async def add_unfilter_channel(event):
 
 # Handler perintah admin untuk menambah kata kunci
 async def add_keyword(event):
-    """Menambahkan kata kunci ke daftar KEYWORDS."""
+    """
+    Menambahkan kata kunci ke daftar KEYWORDS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -140,7 +166,12 @@ async def add_keyword(event):
 
 # Handler perintah admin untuk menghapus channel dari FILTERED_CHANNELS
 async def remove_filter_channel(event):
-    """Menghapus channel dari daftar FILTERED_CHANNELS."""
+    """
+    Menghapus channel dari daftar FILTERED_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -166,7 +197,12 @@ async def remove_filter_channel(event):
 
 # Handler perintah admin untuk menghapus channel dari UNFILTERED_CHANNELS
 async def remove_unfilter_channel(event):
-    """Menghapus channel dari daftar UNFILTERED_CHANNELS."""
+    """
+    Menghapus channel dari daftar UNFILTERED_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -192,7 +228,12 @@ async def remove_unfilter_channel(event):
 
 # Handler perintah admin untuk menghapus kata kunci
 async def remove_keyword(event):
-    """Menghapus kata kunci dari daftar KEYWORDS."""
+    """
+    Menghapus kata kunci dari daftar KEYWORDS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -208,7 +249,12 @@ async def remove_keyword(event):
 
 # Handler perintah admin untuk menampilkan daftar FILTERED_CHANNELS
 async def list_filter_channel(event):
-    """Menampilkan daftar channel di FILTERED_CHANNELS."""
+    """
+    Menampilkan daftar channel di FILTERED_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -227,7 +273,12 @@ async def list_filter_channel(event):
 
 # Handler perintah admin untuk menampilkan daftar UNFILTERED_CHANNELS
 async def list_unfilter_channel(event):
-    """Menampilkan daftar channel di UNFILTERED_CHANNELS."""
+    """
+    Menampilkan daftar channel di UNFILTERED_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -246,7 +297,12 @@ async def list_unfilter_channel(event):
 
 # Handler perintah admin untuk menampilkan daftar kata kunci
 async def list_keyword(event):
-    """Menampilkan daftar kata kunci di KEYWORDS."""
+    """
+    Menampilkan daftar kata kunci di KEYWORDS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -259,7 +315,12 @@ async def list_keyword(event):
 
 # Handler perintah admin untuk menambah channel ke VIP_CHANNELS
 async def add_vip_channel(event):
-    """Menambahkan channel ke daftar VIP_CHANNELS."""
+    """
+    Menambahkan channel ke daftar VIP_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -285,7 +346,12 @@ async def add_vip_channel(event):
 
 # Handler perintah admin untuk menampilkan daftar VIP_CHANNELS
 async def list_vip_channel(event):
-    """Menampilkan daftar channel di VIP_CHANNELS."""
+    """
+    Menampilkan daftar channel di VIP_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -304,7 +370,12 @@ async def list_vip_channel(event):
 
 # Handler perintah admin untuk menghapus channel dari VIP_CHANNELS
 async def remove_vip_channel(event):
-    """Menghapus channel dari daftar VIP_CHANNELS."""
+    """
+    Menghapus channel dari daftar VIP_CHANNELS.
+    
+    Args:
+        event: Event dari Telethon yang berisi perintah dan data.
+    """
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
