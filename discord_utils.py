@@ -33,7 +33,7 @@ async def send_message_to_discord_thread(message):
     }
 
     logger.info("Menunggu 5 detik sebelum mengirim pesan ke Discord...")
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)
     logger.info("Delay selesai, mengirim pesan ke Discord.")
 
     async with aiohttp.ClientSession() as session:
