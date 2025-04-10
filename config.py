@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 
 # Variabel global
@@ -13,18 +14,16 @@ GOOGLE_API_KEY = None
 DISCORD_AUTH_TOKEN = None
 DISCORD_THREAD_ID = None
 
-# Variabel global untuk channel dan keywords
 FILTERED_CHANNELS = []
 UNFILTERED_CHANNELS = []
 VIP_CHANNELS = []
 KEYWORDS = []
 
 def load_env():
-    """Memuat variabel lingkungan dari file .env"""
+    """Memuat variabel lingkungan dari file .env."""
     global API_ID, API_HASH, PHONE, ADMINS, TARGET_CHANNEL, GOOGLE_API_KEY, DISCORD_AUTH_TOKEN, DISCORD_THREAD_ID
     load_dotenv()
     
-    # Ambil variabel dari .env
     api_id_str = os.getenv('TELEGRAM_API_ID')
     api_hash = os.getenv('TELEGRAM_API_HASH')
     phone = os.getenv('TELEGRAM_PHONE')
@@ -34,7 +33,6 @@ def load_env():
     discord_auth_token = os.getenv('DISCORD_AUTH_TOKEN')
     discord_thread_id = os.getenv('DISCORD_THREAD_ID')
     
-    # Validasi variabel wajib sebelum konversi
     required_vars = {
         'TELEGRAM_API_ID': api_id_str,
         'TELEGRAM_API_HASH': api_hash,
@@ -45,15 +43,13 @@ def load_env():
     }
     missing_vars = [key for key, value in required_vars.items() if not value]
     if missing_vars:
-        raise ValueError(f"Variabel wajib berikut kosong atau tidak valid di .env: {', '.join(missing_vars)}")
+        raise ValueError(f"Variabel wajib berikut kosong di .env: {', '.join(missing_vars)}")
     
-    # Konversi API_ID ke integer dengan penanganan error
     try:
         API_ID = int(api_id_str)
     except (ValueError, TypeError):
-        raise ValueError("TELEGRAM_API_ID harus berupa angka integer yang valid.")
+        raise ValueError("TELEGRAM_API_ID harus berupa angka integer.")
     
-    # Tetapkan nilai ke variabel global
     API_HASH = api_hash
     PHONE = phone
     ADMINS = [admin.strip() for admin in admins.split(',') if admin.strip()]
@@ -63,37 +59,48 @@ def load_env():
     DISCORD_THREAD_ID = discord_thread_id
 
 def setup_logging():
-    """Mengatur logging untuk aplikasi"""
-    logging.basicConfig(
-        filename='telegram_forwarder.log',
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    return logging.getLogger(__name__)
+    """Mengatur logging untuk aplikasi dengan rotasi file."""
+    handler = RotatingFileHandler('telegram_forwarder.log', maxBytes=5*1024*1024, backupCount=5)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    logger.addHandler(console_handler)
+    
+    return logger
 
 def load_config():
-    """Memuat konfigurasi dari channels.json dan keywords.json"""
+    """Memuat konfigurasi dari channels.json dan keywords.json."""
     global FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, KEYWORDS
     try:
         with open('channels.json', 'r') as f:
             channels_data = json.load(f)
-            FILTERED_CHANNELS = channels_data.get('FILTERED_CHANNELS', [])
-            UNFILTERED_CHANNELS = channels_data.get('UNFILTERED_CHANNELS', [])
-            VIP_CHANNELS = channels_data.get('VIP_CHANNELS', [])
-    except FileNotFoundError:
+            FILTERED_CHANNELS = [int(ch) for ch in channels_data.get('FILTERED_CHANNELS', [])]
+            UNFILTERED_CHANNELS = [int(ch) for ch in channels_data.get('UNFILTERED_CHANNELS', [])]
+            VIP_CHANNELS = [int(ch) for ch in channels_data.get('VIP_CHANNELS', [])]
+            logger.info(f"Loaded channels: FILTERED={FILTERED_CHANNELS}, UNFILTERED={UNFILTERED_CHANNELS}, VIP={VIP_CHANNELS}")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Error loading channels.json: {str(e)}")
         FILTERED_CHANNELS = []
         UNFILTERED_CHANNELS = []
         VIP_CHANNELS = []
-        print("File channels.json tidak ditemukan. Menggunakan daftar kosong.")
-    
+
     try:
         with open('keywords.json', 'r') as f:
             keywords_data = json.load(f)
-            KEYWORDS = keywords_data.get('KEYWORDS', [])
-    except FileNotFoundError:
+            KEYWORDS = [str(kw) for kw in keywords_data.get('KEYWORDS', [])]
+            logger.info(f"Loaded keywords: {KEYWORDS}")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Error loading keywords.json: {str(e)}")
         KEYWORDS = []
-        print("File keywords.json tidak ditemukan. Menggunakan daftar kosong.")
 
-# Panggil fungsi load_env() dan load_config() saat modul diimpor
+# Inisialisasi saat modul diimpor
 load_env()
+logger = setup_logging()
 load_config()
