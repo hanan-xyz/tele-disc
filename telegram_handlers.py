@@ -1,62 +1,78 @@
-from telethon import events
 import json
+from telethon import events
 from config import FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, KEYWORDS, ADMINS, TARGET_CHANNEL, DISCORD_THREAD_ID, setup_logging
 from utils import extract_username, contains_keyword, translate_text
-from discord_bot import send_discord_message
+from discord_utils import send_message_to_discord_thread
 
+# Inisialisasi logger
 logger = setup_logging()
 
 # Fungsi untuk memperbarui channel yang dipantau
 async def update_monitored_chats(client):
-    client.remove_event_handler(forward_message)
-    client.add_event_handler(forward_message, events.NewMessage(chats=FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS))
-    logger.info("Channel yang dipantau diperbarui.")
+    """Memperbarui daftar channel yang dipantau oleh bot."""
+    chats = FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS
+    if not chats:
+        logger.warning("Tidak ada channel yang dipantau.")
+        return
+    try:
+        client.remove_event_handler(forward_message)
+        client.add_event_handler(forward_message, events.NewMessage(chats=chats))
+        logger.info("Channel yang dipantau diperbarui.")
+    except Exception as e:
+        logger.critical(f"Gagal memperbarui channel yang dipantau: {str(e)}")
+        raise
 
-# Handler untuk meneruskan pesan dari channel yang dipantau
-@events.register(events.NewMessage(chats=FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS))
+# Fungsi untuk meneruskan pesan
 async def forward_message(event):
     try:
         message = event.message
-        chat_id = event.chat.id
+        chat_id = event.chat_id
         source_username = f"@{event.chat.username}" if event.chat.username else f"Channel ID: {chat_id}"
         logger.debug(f"Memproses pesan {message.id} dari {chat_id}")
 
-        translated_text = message.text
+        # Menentukan base_message berdasarkan ada/tidaknya teks dan jenis channel
         if message.text:
             translated_text = await translate_text(message.text)
-            base_message = f"{translated_text} - {source_username}"
+            if chat_id in VIP_CHANNELS:
+                base_message = translated_text  # Hanya teks terjemahan untuk VIP
+            else:
+                base_message = f"{translated_text} - {source_username}"  # Teks + username untuk non-VIP
         else:
-            base_message = f"(Tidak ada teks) - {source_username}"
+            if chat_id in VIP_CHANNELS:
+                base_message = "(Tidak ada teks)"  # Tanpa username untuk VIP
+            else:
+                base_message = f"(Tidak ada teks) - {source_username}"  # Dengan username untuk non-VIP
 
+        # Mengirim pesan berdasarkan jenis channel
         if chat_id in VIP_CHANNELS:
-            final_message_telegram = f"**[VIP] {base_message}**"
-            final_message_discord = f"### **[VIP] {base_message}**"
+            final_message_telegram = f"**{base_message}**"
+            final_message_discord = f"### {base_message}"
             await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
-            await send_discord_message(DISCORD_THREAD_ID, final_message_discord)
+            await send_message_to_discord_thread(final_message_discord)
             logger.info(f"Pesan VIP {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan Discord thread")
         elif chat_id in FILTERED_CHANNELS:
             if message.text and contains_keyword(message.text, KEYWORDS):
                 final_message_telegram = base_message
-                final_message_discord = f"### **{base_message}**"
+                final_message_discord = f"### {base_message}"
                 await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
-                await send_discord_message(DISCORD_THREAD_ID, final_message_discord)
+                await send_message_to_discord_thread(final_message_discord)
                 logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan Discord thread")
             else:
                 logger.info(f"Pesan dari {chat_id} tidak mengandung kata kunci: {message.text}")
         elif chat_id in UNFILTERED_CHANNELS:
             final_message_telegram = base_message
-            final_message_discord = f"**{base_message}**"
+            final_message_discord = f"{base_message}"
             await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
-            await send_discord_message(DISCORD_THREAD_ID, final_message_discord)
+            await send_message_to_discord_thread(final_message_discord)
             logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan Discord thread")
     except Exception as e:
         logger.error(f"Gagal memproses pesan {message.id}: {str(e)}")
         for admin in ADMINS:
             await event.client.send_message(int(admin), f"Galat memproses pesan {message.id} dari {source_username}: {str(e)}\nTeks: {message.text}")
 
-# Handler untuk menambah channel filter
-@events.register(events.NewMessage(pattern='/add_filter_channel (.+)'))
+# Handler perintah admin untuk menambah channel ke FILTERED_CHANNELS
 async def add_filter_channel(event):
+    """Menambahkan channel ke daftar FILTERED_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -65,6 +81,8 @@ async def add_filter_channel(event):
     try:
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
+        if channel_id > 0:
+            channel_id = -1000000000000 - channel_id
         if channel_id not in FILTERED_CHANNELS:
             FILTERED_CHANNELS.append(channel_id)
             with open('channels.json', 'w') as f:
@@ -78,9 +96,9 @@ async def add_filter_channel(event):
         await event.reply(f"Gagal menambah channel: {str(e)}")
         logger.error(f"Galat menambah channel {channel_name}: {str(e)}")
 
-# Handler untuk menambah channel tanpa filter
-@events.register(events.NewMessage(pattern='/add_unfilter_channel (.+)'))
+# Handler perintah admin untuk menambah channel ke UNFILTERED_CHANNELS
 async def add_unfilter_channel(event):
+    """Menambahkan channel ke daftar UNFILTERED_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -89,6 +107,8 @@ async def add_unfilter_channel(event):
     try:
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
+        if channel_id > 0:
+            channel_id = -1000000000000 - channel_id
         if channel_id not in UNFILTERED_CHANNELS:
             UNFILTERED_CHANNELS.append(channel_id)
             with open('channels.json', 'w') as f:
@@ -102,9 +122,9 @@ async def add_unfilter_channel(event):
         await event.reply(f"Gagal menambah channel: {str(e)}")
         logger.error(f"Galat menambah channel {channel_name}: {str(e)}")
 
-# Handler untuk menambah kata kunci
-@events.register(events.NewMessage(pattern='/add_keyword (.+)'))
+# Handler perintah admin untuk menambah kata kunci
 async def add_keyword(event):
+    """Menambahkan kata kunci ke daftar KEYWORDS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -118,9 +138,9 @@ async def add_keyword(event):
     else:
         await event.reply(f"Kata kunci {keyword} sudah ada.")
 
-# Handler untuk menghapus channel filter
-@events.register(events.NewMessage(pattern='/remove_filter_channel (.+)'))
+# Handler perintah admin untuk menghapus channel dari FILTERED_CHANNELS
 async def remove_filter_channel(event):
+    """Menghapus channel dari daftar FILTERED_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -129,6 +149,8 @@ async def remove_filter_channel(event):
     try:
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
+        if channel_id > 0:
+            channel_id = -1000000000000 - channel_id
         if channel_id in FILTERED_CHANNELS:
             FILTERED_CHANNELS.remove(channel_id)
             with open('channels.json', 'w') as f:
@@ -142,9 +164,9 @@ async def remove_filter_channel(event):
         await event.reply(f"Gagal menghapus channel: {str(e)}")
         logger.error(f"Galat menghapus channel {channel_name}: {str(e)}")
 
-# Handler untuk menghapus channel tanpa filter
-@events.register(events.NewMessage(pattern='/remove_unfilter_channel (.+)'))
+# Handler perintah admin untuk menghapus channel dari UNFILTERED_CHANNELS
 async def remove_unfilter_channel(event):
+    """Menghapus channel dari daftar UNFILTERED_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -153,6 +175,8 @@ async def remove_unfilter_channel(event):
     try:
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
+        if channel_id > 0:
+            channel_id = -1000000000000 - channel_id
         if channel_id in UNFILTERED_CHANNELS:
             UNFILTERED_CHANNELS.remove(channel_id)
             with open('channels.json', 'w') as f:
@@ -166,9 +190,9 @@ async def remove_unfilter_channel(event):
         await event.reply(f"Gagal menghapus channel: {str(e)}")
         logger.error(f"Galat menghapus channel {channel_name}: {str(e)}")
 
-# Handler untuk menghapus kata kunci
-@events.register(events.NewMessage(pattern='/remove_keyword (.+)'))
+# Handler perintah admin untuk menghapus kata kunci
 async def remove_keyword(event):
+    """Menghapus kata kunci dari daftar KEYWORDS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -182,35 +206,47 @@ async def remove_keyword(event):
     else:
         await event.reply(f"Kata kunci {keyword} tidak ditemukan.")
 
-# Handler untuk menampilkan daftar channel filter
-@events.register(events.NewMessage(pattern='/list_filter'))
+# Handler perintah admin untuk menampilkan daftar FILTERED_CHANNELS
 async def list_filter_channel(event):
+    """Menampilkan daftar channel di FILTERED_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
     if FILTERED_CHANNELS:
         list_str = "Daftar Channel Filter:\n"
-        list_str += "\n".join([f"{i+1}. Channel ID: {channel}" for i, channel in enumerate(FILTERED_CHANNELS)])
+        for i, channel_id in enumerate(FILTERED_CHANNELS):
+            try:
+                entity = await event.client.get_entity(channel_id)
+                name = entity.username or f"Channel ID: {channel_id}"
+                list_str += f"{i+1}. @{name}\n"
+            except Exception:
+                list_str += f"{i+1}. Channel ID: {channel_id} (tidak dapat diambil)\n"
         await event.reply(f"```\n{list_str}\n```")
     else:
         await event.reply("Tidak ada channel di FILTERED_CHANNELS.")
 
-# Handler untuk menampilkan daftar channel tanpa filter
-@events.register(events.NewMessage(pattern='/list_unfilter'))
+# Handler perintah admin untuk menampilkan daftar UNFILTERED_CHANNELS
 async def list_unfilter_channel(event):
+    """Menampilkan daftar channel di UNFILTERED_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
     if UNFILTERED_CHANNELS:
         list_str = "Daftar Channel Tanpa Filter:\n"
-        list_str += "\n".join([f"{i+1}. Channel ID: {channel}" for i, channel in enumerate(UNFILTERED_CHANNELS)])
+        for i, channel_id in enumerate(UNFILTERED_CHANNELS):
+            try:
+                entity = await event.client.get_entity(channel_id)
+                name = entity.username or f"Channel ID: {channel_id}"
+                list_str += f"{i+1}. @{name}\n"
+            except Exception:
+                list_str += f"{i+1}. Channel ID: {channel_id} (tidak dapat diambil)\n"
         await event.reply(f"```\n{list_str}\n```")
     else:
         await event.reply("Tidak ada channel di UNFILTERED_CHANNELS.")
 
-# Handler untuk menampilkan daftar kata kunci
-@events.register(events.NewMessage(pattern='/list_keyword'))
+# Handler perintah admin untuk menampilkan daftar kata kunci
 async def list_keyword(event):
+    """Menampilkan daftar kata kunci di KEYWORDS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -221,9 +257,9 @@ async def list_keyword(event):
     else:
         await event.reply("Tidak ada kata kunci yang ditambahkan.")
 
-# Handler untuk menambah channel VIP
-@events.register(events.NewMessage(pattern='/add_vip_channel (.+)'))
+# Handler perintah admin untuk menambah channel ke VIP_CHANNELS
 async def add_vip_channel(event):
+    """Menambahkan channel ke daftar VIP_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -232,6 +268,8 @@ async def add_vip_channel(event):
     try:
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
+        if channel_id > 0:
+            channel_id = -1000000000000 - channel_id
         if channel_id not in VIP_CHANNELS:
             VIP_CHANNELS.append(channel_id)
             with open('channels.json', 'w') as f:
@@ -245,22 +283,28 @@ async def add_vip_channel(event):
         await event.reply(f"Gagal menambah channel VIP: {str(e)}")
         logger.error(f"Galat menambah channel VIP {channel_name}: {str(e)}")
 
-# Handler untuk menampilkan daftar channel VIP
-@events.register(events.NewMessage(pattern='/list_vip'))
+# Handler perintah admin untuk menampilkan daftar VIP_CHANNELS
 async def list_vip_channel(event):
+    """Menampilkan daftar channel di VIP_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
     if VIP_CHANNELS:
         list_str = "Daftar Channel VIP:\n"
-        list_str += "\n".join([f"{i+1}. Channel ID: {channel}" for i, channel in enumerate(VIP_CHANNELS)])
+        for i, channel_id in enumerate(VIP_CHANNELS):
+            try:
+                entity = await event.client.get_entity(channel_id)
+                name = entity.username or f"Channel ID: {channel_id}"
+                list_str += f"{i+1}. @{name}\n"
+            except Exception:
+                list_str += f"{i+1}. Channel ID: {channel_id} (tidak dapat diambil)\n"
         await event.reply(f"```\n{list_str}\n```")
     else:
         await event.reply("Tidak ada channel di VIP_CHANNELS.")
 
-# Handler untuk menghapus channel VIP
-@events.register(events.NewMessage(pattern='/remove_vip_channel (.+)'))
+# Handler perintah admin untuk menghapus channel dari VIP_CHANNELS
 async def remove_vip_channel(event):
+    """Menghapus channel dari daftar VIP_CHANNELS."""
     if str(event.sender_id) not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
         return
@@ -269,6 +313,8 @@ async def remove_vip_channel(event):
     try:
         entity = await event.client.get_entity(channel_name)
         channel_id = entity.id
+        if channel_id > 0:
+            channel_id = -1000000000000 - channel_id
         if channel_id in VIP_CHANNELS:
             VIP_CHANNELS.remove(channel_id)
             with open('channels.json', 'w') as f:
