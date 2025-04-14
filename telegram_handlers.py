@@ -6,9 +6,9 @@ import tempfile
 from collections import deque
 from telethon import events
 from telethon.tl.types import MessageMediaPhoto
-from config import FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, SUMMARY_CHANNELS, IMAGE_CHANNELS, KEYWORDS, SUMMARY_KEYWORDS, ADMINS, TARGET_CHANNEL, DISCORD_THREAD_ID, logger
-from utils import extract_username, contains_keyword, translate_text, remove_markdown
-from discord_utils import send_message_to_discord_thread
+from config import FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, SUMMARY_CHANNELS, IMAGE_CHANNELS, KEYWORDS, SUMMARY_KEYWORDS, BLOCKED_KEYWORDS, ADMINS, TARGET_CHANNEL, DISCORD_THREAD_ID, logger
+from utils import extract_username, contains_keyword, contains_blocked_keyword, translate_text, remove_markdown, contains_username
+from discord_utils import send_message_to_discord_thread, failed_message_queue
 
 # Gunakan deque untuk melacak pesan yang sudah diproses (batas maksimal 1000 pesan)
 processed_messages = deque(maxlen=1000)
@@ -20,12 +20,13 @@ async def update_monitored_chats(client):
     Args:
         client: Objek TelegramClient.
     """
-    chats = FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS + SUMMARY_CHANNELS + IMAGE_CHANNELS
+    chats = list(set(FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS + SUMMARY_CHANNELS + IMAGE_CHANNELS))
     if not chats:
         logger.warning("Tidak ada channel yang dipantau.")
         return
     
     try:
+        client.remove_event_handler(forward_message)  # Hapus handler lama
         client.add_event_handler(forward_message, events.NewMessage(chats=chats))
         logger.info(f"Channel yang dipantau diperbarui: {chats}")
     except Exception as e:
@@ -43,6 +44,7 @@ def transform_summary_message(message, for_discord=False):
     Returns:
         str: Pesan yang telah diringkas dan diformat.
     """
+    logger.debug(f"Masuk transform_summary_message: {message}, for_discord={for_discord}")
     lines = message.split('\n')
     important_message = lines[0].strip() if lines else message.strip()
 
@@ -61,7 +63,9 @@ def transform_summary_message(message, for_discord=False):
             modified_url = url.replace('.', '[.]', 1)
             important_message = important_message.replace(url, modified_url)
 
-    return important_message.strip()
+    cleaned_message = important_message.strip()
+    logger.debug(f"Keluar transform_summary_message: {cleaned_message}")
+    return cleaned_message
 
 async def forward_message(event):
     """
@@ -75,13 +79,11 @@ async def forward_message(event):
         chat_id = event.chat_id
         message_id = message.id
         
-        # Buat ID unik untuk pesan
         unique_id = f"{chat_id}:{message_id}"
         if unique_id in processed_messages:
             logger.debug(f"Pesan {unique_id} sudah diproses, dilewati.")
             return
         
-        # Tambahkan ke deque
         processed_messages.append(unique_id)
         
         source_username = f"@{event.chat.username}" if event.chat.username else f"Channel ID: {chat_id}"
@@ -91,74 +93,105 @@ async def forward_message(event):
         if chat_id in IMAGE_CHANNELS and message.media and isinstance(message.media, MessageMediaPhoto):
             translated_text = ""
             if message.text:
-                translated_text = await translate_text(message.text.strip())
-                translated_text = remove_markdown(translated_text)  # Hapus markdown
+                if contains_username(message.text):
+                    logger.debug(f"Pesan mengandung username, melewati terjemahan: {message.text}")
+                    translated_text = message.text.strip()
+                else:
+                    translated_text = await translate_text(message.text.strip())
+                    logger.debug(f"Teks setelah terjemahan (image): {translated_text}")
+                translated_text = remove_markdown(translated_text)
+                logger.debug(f"Teks setelah remove_markdown (image): {translated_text}")
             else:
                 translated_text = ""
 
-            # Forward pesan bergambar ke Telegram
             final_message_telegram = f"{translated_text} - {source_username}" if translated_text else f"- {source_username}"
             await event.client.send_message(TARGET_CHANNEL, file=message.media, message=final_message_telegram)
             logger.info(f"Pesan bergambar {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL}")
             
-            # Simpan gambar sementara untuk Discord
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-            media_path = temp_file.name
-            try:
-                await event.client.download_media(message.media, media_path)
-                final_message_discord = f"## {translated_text} - {source_username}" if translated_text else f"- {source_username}"
-                await send_message_to_discord_thread(final_message_discord, media_path=media_path)
-                logger.info(f"Pesan bergambar {message.id} dikirim ke antrian Discord dari {chat_id}")
-            except Exception as e:
-                logger.error(f"Gagal mengunduh atau mengirim gambar ke Discord: {str(e)}")
-                await failed_message_queue.put((final_message_discord, f"Gagal mengunduh gambar: {str(e)}"))
-            finally:
-                temp_file.close()
+            final_message_discord = f"## {translated_text} - {source_username}" if translated_text else f"- {source_username}"
+            if translated_text and contains_blocked_keyword(translated_text, BLOCKED_KEYWORDS):
+                logger.warning(f"Pesan {message.id} tidak dikirim ke Discord karena mengandung kata yang diblokir: {translated_text}")
+                await failed_message_queue.put((final_message_discord, "Mengandung kata yang diblokir"))
+            else:
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                media_path = temp_file.name
+                try:
+                    await event.client.download_media(message.media, media_path)
+                    await send_message_to_discord_thread(final_message_discord, media_path=media_path)
+                    logger.info(f"Pesan bergambar {message.id} dikirim ke antrian Discord dari {chat_id}")
+                except Exception as e:
+                    logger.error(f"Gagal mengunduh atau mengirim gambar ke Discord: {str(e)}")
+                    await failed_message_queue.put((final_message_discord, f"Gagal mengunduh gambar: {str(e)}"))
+                finally:
+                    temp_file.close()
             return
 
-        # Tangani pesan teks seperti sebelumnya
+        # Tangani pesan teks
         translated_text = message.text
         if message.text:
-            translated_text = await translate_text(message.text.strip())
+            if contains_username(message.text):
+                logger.debug(f"Pesan mengandung username, melewati terjemahan: {message.text}")
+                translated_text = message.text.strip()
+            else:
+                translated_text = await translate_text(message.text.strip())
+                logger.debug(f"Teks setelah terjemahan: {translated_text}")
+            translated_text = remove_markdown(translated_text)
+            logger.debug(f"Teks setelah remove_markdown: {translated_text}")
         else:
             translated_text = "(Tidak ada teks)"
 
-        if chat_id in SUMMARY_CHANNELS:
-            if message.text and contains_keyword(message.text, SUMMARY_KEYWORDS):
-                base_message_telegram = transform_summary_message(translated_text, for_discord=False)
-                base_message_discord = transform_summary_message(translated_text, for_discord=True)
-                final_message_telegram = f"{base_message_telegram} - {source_username}"
-                final_message_discord = f"### {base_message_discord} - {source_username}"
-                await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+        # Prioritaskan aturan untuk mencegah pemrosesan ganda
+        if chat_id in SUMMARY_CHANNELS and message.text and contains_keyword(message.text, SUMMARY_KEYWORDS):
+            base_message_telegram = transform_summary_message(translated_text, for_discord=False)
+            base_message_discord = transform_summary_message(translated_text, for_discord=True)
+            final_message_telegram = f"{base_message_telegram} - {source_username}"
+            final_message_discord = f"### {base_message_discord} - {source_username}"
+            await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            if contains_blocked_keyword(base_message_discord, BLOCKED_KEYWORDS):
+                logger.warning(f"Pesan {message.id} tidak dikirim ke Discord karena mengandung kata yang diblokir: {base_message_discord}")
+                await failed_message_queue.put((final_message_discord, "Mengandung kata yang diblokir"))
+            else:
                 await send_message_to_discord_thread(final_message_discord)
                 logger.info(f"Pesan ringkasan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan antrian Discord")
-            else:
-                logger.info(f"Pesan dari {chat_id} tidak mengandung summary keywords: {message.text}")
-        else:
+            return  # Keluar setelah memproses sebagai SUMMARY_CHANNEL
+        elif chat_id in VIP_CHANNELS:
             base_message = translated_text
-            if chat_id in VIP_CHANNELS:
-                final_message_telegram = f"**{base_message} - {source_username}**"
-                final_message_discord = f"### {base_message} - {source_username}"
-                await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            final_message_telegram = f"**{base_message} - {source_username}**"
+            final_message_discord = f"### {base_message} - {source_username}"
+            await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            if contains_blocked_keyword(base_message, BLOCKED_KEYWORDS):
+                logger.warning(f"Pesan {message.id} tidak dikirim ke Discord karena mengandung kata yang diblokir: {base_message}")
+                await failed_message_queue.put((final_message_discord, "Mengandung kata yang diblokir"))
+            else:
                 await send_message_to_discord_thread(final_message_discord)
                 logger.info(f"Pesan VIP {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan antrian Discord")
-            
-            elif chat_id in FILTERED_CHANNELS:
-                if message.text and contains_keyword(message.text, KEYWORDS):
-                    final_message_telegram = f"{base_message} - {source_username}"
-                    final_message_discord = f"### {base_message} - {source_username}"
-                    await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
-                    await send_message_to_discord_thread(final_message_discord)
-                    logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan antrian Discord")
-                else:
-                    logger.info(f"Pesan dari {chat_id} tidak mengandung kata kunci: {message.text}")
-            
-            elif chat_id in UNFILTERED_CHANNELS:
-                final_message_telegram = f"{base_message} - {source_username}"
-                final_message_discord = f"{base_message} - {source_username}"
-                await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            return  # Keluar setelah memproses sebagai VIP_CHANNEL
+        elif chat_id in FILTERED_CHANNELS and message.text and contains_keyword(message.text, KEYWORDS):
+            base_message = translated_text
+            final_message_telegram = f"{base_message} - {source_username}"
+            final_message_discord = f"### {base_message} - {source_username}"
+            await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            if contains_blocked_keyword(base_message, BLOCKED_KEYWORDS):
+                logger.warning(f"Pesan {message.id} tidak dikirim ke Discord karena  karena mengandung kata yang diblokir: {base_message}")
+                await failed_message_queue.put((final_message_discord, "Mengandung kata yang diblokir"))
+            else:
                 await send_message_to_discord_thread(final_message_discord)
                 logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan antrian Discord")
+            return  # Keluar setelah memproses sebagai FILTERED_CHANNEL
+        elif chat_id in UNFILTERED_CHANNELS:
+            base_message = translated_text
+            final_message_telegram = f"{base_message} - {source_username}"
+            final_message_discord = f"{base_message} - {source_username}"
+            await event.client.send_message(TARGET_CHANNEL, final_message_telegram)
+            if contains_blocked_keyword(base_message, BLOCKED_KEYWORDS):
+                logger.warning(f"Pesan {message.id} tidak dikirim ke Discord karena mengandung kata yang diblokir: {base_message}")
+                await failed_message_queue.put((final_message_discord, "Mengandung kata yang diblokir"))
+            else:
+                await send_message_to_discord_thread(final_message_discord)
+                logger.info(f"Pesan {message.id} diteruskan dari {chat_id} ke {TARGET_CHANNEL} dan antrian Discord")
+            return  # Keluar setelah memproses sebagai UNFILTERED_CHANNEL
+        else:
+            logger.info(f"Pesan dari {chat_id} tidak memenuhi kriteria pengiriman: {message.text}")
     
     except Exception as e:
         logger.critical(f"Gagal memproses pesan {message.id}: {str(e)}")
@@ -174,7 +207,7 @@ async def update_channel_list(event, channel_list, list_name, action, channel_na
     
     Args:
         event: Event dari Telethon.
-        channel_list: Daftar channel yang akan diubah (misalnya, IMAGE_CHANNELS).
+        channel_list: Daftar channel yang akan diubah.
         list_name: Nama daftar (untuk logging dan pesan).
         action: 'add' atau 'remove'.
         channel_name: Nama atau ID channel.
@@ -216,19 +249,16 @@ async def update_channel_list(event, channel_list, list_name, action, channel_na
         await event.reply(f"Gagal {action} channel: {str(e)}")
         logger.error(f"Galat {action} channel {channel_name}: {str(e)}")
 
-# Handler perintah admin untuk menambah channel ke IMAGE_CHANNELS
 async def add_image_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, IMAGE_CHANNELS, "IMAGE_CHANNELS", "add", channel_name)
 
-# Handler perintah admin untuk menghapus channel dari IMAGE_CHANNELS
 async def remove_image_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, IMAGE_CHANNELS, "IMAGE_CHANNELS", "remove", channel_name)
 
-# Handler perintah admin untuk menampilkan daftar IMAGE_CHANNELS
 async def list_image_channel(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -247,19 +277,16 @@ async def list_image_channel(event):
     else:
         await event.reply("Tidak ada channel di IMAGE_CHANNELS.")
 
-# Handler perintah admin untuk menambah channel ke SUMMARY_CHANNELS
 async def add_summary_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, SUMMARY_CHANNELS, "SUMMARY_CHANNELS", "add", channel_name)
 
-# Handler perintah admin untuk menghapus channel dari SUMMARY_CHANNELS
 async def remove_summary_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, SUMMARY_CHANNELS, "SUMMARY_CHANNELS", "remove", channel_name)
 
-# Handler perintah admin untuk menampilkan daftar SUMMARY_CHANNELS
 async def list_summary_channel(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -278,7 +305,6 @@ async def list_summary_channel(event):
     else:
         await event.reply("Tidak ada channel di SUMMARY_CHANNELS.")
 
-# Handler perintah admin untuk menambah keyword ke SUMMARY_KEYWORDS
 async def add_keyword_summary(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -294,7 +320,6 @@ async def add_keyword_summary(event):
     else:
         await event.reply(f"Kata kunci summary {keyword} sudah ada.")
 
-# Handler perintah admin untuk menghapus keyword dari SUMMARY_KEYWORDS
 async def remove_keyword_summary(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -310,7 +335,6 @@ async def remove_keyword_summary(event):
     else:
         await event.reply(f"Kata kunci summary {keyword} tidak ditemukan.")
 
-# Handler perintah admin untuk menampilkan daftar SUMMARY_KEYWORDS
 async def list_keyword_summary(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -323,19 +347,16 @@ async def list_keyword_summary(event):
     else:
         await event.reply("Tidak ada kata kunci summary yang ditambahkan.")
 
-# Handler perintah admin untuk menambah channel ke FILTERED_CHANNELS
 async def add_filter_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, FILTERED_CHANNELS, "FILTERED_CHANNELS", "add", channel_name)
 
-# Handler perintah admin untuk menambah channel ke UNFILTERED_CHANNELS
 async def add_unfilter_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, UNFILTERED_CHANNELS, "UNFILTERED_CHANNELS", "add", channel_name)
 
-# Handler perintah admin untuk menambah kata kunci
 async def add_keyword(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -351,19 +372,16 @@ async def add_keyword(event):
     else:
         await event.reply(f"Kata kunci {keyword} sudah ada.")
 
-# Handler perintah admin untuk menghapus channel dari FILTERED_CHANNELS
 async def remove_filter_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, FILTERED_CHANNELS, "FILTERED_CHANNELS", "remove", channel_name)
 
-# Handler perintah admin untuk menghapus channel dari UNFILTERED_CHANNELS
 async def remove_unfilter_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, UNFILTERED_CHANNELS, "UNFILTERED_CHANNELS", "remove", channel_name)
 
-# Handler perintah admin untuk menghapus kata kunci
 async def remove_keyword(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -379,7 +397,6 @@ async def remove_keyword(event):
     else:
         await event.reply(f"Kata kunci {keyword} tidak ditemukan.")
 
-# Handler perintah admin untuk menampilkan daftar FILTERED_CHANNELS
 async def list_filter_channel(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -398,7 +415,6 @@ async def list_filter_channel(event):
     else:
         await event.reply("Tidak ada channel di FILTERED_CHANNELS.")
 
-# Handler perintah admin untuk menampilkan daftar UNFILTERED_CHANNELS
 async def list_unfilter_channel(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -409,7 +425,7 @@ async def list_unfilter_channel(event):
         for i, channel_id in enumerate(UNFILTERED_CHANNELS):
             try:
                 entity = await event.client.get_entity(channel_id)
-                name = entity.username or f"Channel ID: {channel_id}"
+                name = entity.username or f"Channel ID: {chat_id}"
                 list_str += f"{i+1}. @{name}\n"
             except Exception:
                 list_str += f"{i+1}. Channel ID: {channel_id} (tidak dapat diambil)\n"
@@ -417,7 +433,6 @@ async def list_unfilter_channel(event):
     else:
         await event.reply("Tidak ada channel di UNFILTERED_CHANNELS.")
 
-# Handler perintah admin untuk menampilkan daftar kata kunci
 async def list_keyword(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -430,13 +445,11 @@ async def list_keyword(event):
     else:
         await event.reply("Tidak ada kata kunci yang ditambahkan.")
 
-# Handler perintah admin untuk menambah channel ke VIP_CHANNELS
 async def add_vip_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, VIP_CHANNELS, "VIP_CHANNELS", "add", channel_name)
 
-# Handler perintah admin untuk menampilkan daftar VIP_CHANNELS
 async def list_vip_channel(event):
     if event.sender_id not in ADMINS:
         await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
@@ -455,8 +468,49 @@ async def list_vip_channel(event):
     else:
         await event.reply("Tidak ada channel di VIP_CHANNELS.")
 
-# Handler perintah admin untuk menghapus channel dari VIP_CHANNELS
 async def remove_vip_channel(event):
     input_str = event.pattern_match.group(1)
     channel_name = extract_username(input_str)
     await update_channel_list(event, VIP_CHANNELS, "VIP_CHANNELS", "remove", channel_name)
+
+async def add_blocked_keyword(event):
+    if event.sender_id not in ADMINS:
+        await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
+        return
+    
+    keyword = event.pattern_match.group(1).strip()
+    if keyword not in BLOCKED_KEYWORDS:
+        BLOCKED_KEYWORDS.append(keyword)
+        with open('blocked_keywords.json', 'w') as f:
+            json.dump({'BLOCKED_KEYWORDS': BLOCKED_KEYWORDS}, f)
+        await event.reply(f"Kata yang diblokir {keyword} ditambahkan.")
+        logger.info(f"Kata yang diblokir {keyword} ditambahkan: {BLOCKED_KEYWORDS}")
+    else:
+        await event.reply(f"Kata yang diblokir {keyword} sudah ada.")
+
+async def remove_blocked_keyword(event):
+    if event.sender_id not in ADMINS:
+        await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
+        return
+    
+    keyword = event.pattern_match.group(1).strip()
+    if keyword in BLOCKED_KEYWORDS:
+        BLOCKED_KEYWORDS.remove(keyword)
+        with open('blocked_keywords.json', 'w') as f:
+            json.dump({'BLOCKED_KEYWORDS': BLOCKED_KEYWORDS}, f)
+        await event.reply(f"Kata yang diblokir {keyword} dihapus.")
+        logger.info(f"Kata yang diblokir {keyword} dihapus: {BLOCKED_KEYWORDS}")
+    else:
+        await event.reply(f"Kata yang diblokir {keyword} tidak ditemukan.")
+
+async def list_blocked_keyword(event):
+    if event.sender_id not in ADMINS:
+        await event.reply("Kamu tidak berwenang menggunakan perintah ini.")
+        return
+    
+    if BLOCKED_KEYWORDS:
+        list_str = "Daftar Kata yang Diblokir:\n"
+        list_str += "\n".join([f"{i+1}. {keyword}" for i, keyword in enumerate(BLOCKED_KEYWORDS)])
+        await event.reply(f"```\n{list_str}\n```")
+    else:
+        await event.reply("Tidak ada kata yang diblokir.")
