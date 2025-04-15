@@ -25,7 +25,10 @@ from telegram_handlers import (
     remove_keyword_summary,
     add_image_channel,
     remove_image_channel,
-    list_image_channel
+    list_image_channel,
+    add_blocked_keyword,
+    remove_blocked_keyword,
+    list_blocked_keyword
 )
 
 # Inisialisasi logger
@@ -59,20 +62,25 @@ async def main():
     asyncio.create_task(notify_failed_messages_with_telegram(client))
 
     # Daftarkan handler untuk pesan baru
-    chats = FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS + SUMMARY_CHANNELS + IMAGE_CHANNELS
+    chats = list(set(FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS + SUMMARY_CHANNELS + IMAGE_CHANNELS))  # Hindari duplikasi
     if not chats:
         logger.warning("Tidak ada channel yang dipantau. Tambahkan channel ke channels.json atau gunakan perintah admin.")
     else:
+        # Pastikan handler hanya terdaftar sekali
+        try:
+            client.remove_event_handler(forward_message)
+        except Exception as e:
+            logger.debug(f"Tidak ada handler forward_message untuk dihapus: {str(e)}")
         client.add_event_handler(forward_message, events.NewMessage(chats=chats))
         logger.info(f"Handler forward_message terdaftar untuk channel: {chats}")
 
     # Daftarkan handler perintah admin dengan pola regex yang ketat
     admin_commands = [
-        (add_filter_channel, r'^/addfilterch (.+)'),
-        (add_unfilter_channel, r'^/addunfilterch(.+)'),
+        (add_filter_channel, r'^/addfilter (.+)'),
+        (add_unfilter_channel, r'^/addunfilter (.+)'),
         (add_keyword, r'^/add_keyword (.+)'),
-        (remove_filter_channel, r'^/removefilterch (.+)'),
-        (remove_unfilter_channel, r'^/removeunfilterch (.+)'),
+        (remove_filter_channel, r'^/removefilter (.+)'),
+        (remove_unfilter_channel, r'^/removeunfilter (.+)'),
         (remove_keyword, r'^/remove_keyword (.+)'),
         (list_filter_channel, r'^/list_filter\b'),
         (list_unfilter_channel, r'^/list_unfilter\b'),
@@ -80,18 +88,25 @@ async def main():
         (add_vip_channel, r'^/addvip (.+)'),
         (list_vip_channel, r'^/list_vip\b'),
         (remove_vip_channel, r'^/removevip (.+)'),
-        (add_summary_channel, r'^/addsummarych (.+)'),
+        (add_summary_channel, r'^/addsummary (.+)'),
         (remove_summary_channel, r'^/removesummary (.+)'),
         (list_summary_channel, r'^/list_summary\b'),
-        (add_keyword_summary, r'^/addkeysummary (.+)'),
-        (list_keyword_summary, r'^/listkeywsummary\b'),
-        (remove_keyword_summary, r'^/removekeysummary (.+)'),
-        (add_image_channel, r'^/addimagech (.+)'),
-        (remove_image_channel, r'^/removeimagech (.+)'),
-        (list_image_channel, r'^/listimgch\b')
+        (add_keyword_summary, r'^/add_keyword_summary (.+)'),
+        (list_keyword_summary, r'^/list_keyword_summary\b'),
+        (remove_keyword_summary, r'^/remove_keyword_summary (.+)'),
+        (add_image_channel, r'^/add_image_channel (.+)'),
+        (remove_image_channel, r'^/remove_image_channel (.+)'),
+        (list_image_channel, r'^/list_image_channel\b'),
+        (add_blocked_keyword, r'^/add_blocked_keyword (.+)'),
+        (remove_blocked_keyword, r'^/remove_blocked_keyword (.+)'),
+        (list_blocked_keyword, r'^/list_blocked_keyword\b')
     ]
 
     for handler, pattern in admin_commands:
+        try:
+            client.remove_event_handler(handler)
+        except Exception as e:
+            logger.debug(f"Tidak ada handler {handler.__name__} untuk dihapus: {str(e)}")
         client.add_event_handler(handler, events.NewMessage(pattern=pattern))
 
     # Jalankan klien hingga terputus

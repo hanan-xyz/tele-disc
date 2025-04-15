@@ -18,9 +18,10 @@ FILTERED_CHANNELS = []
 UNFILTERED_CHANNELS = []
 VIP_CHANNELS = []
 SUMMARY_CHANNELS = []
-IMAGE_CHANNELS = []  # Daftar baru untuk channel gambar
+IMAGE_CHANNELS = []
 KEYWORDS = []
 SUMMARY_KEYWORDS = []
+BLOCKED_KEYWORDS = []
 
 def load_env():
     """Memuat variabel lingkungan dari file .env."""
@@ -70,7 +71,7 @@ def setup_logging():
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.DEBUG)  # Ubah ke DEBUG untuk konsol
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     
     logger = logging.getLogger('telegram_forwarder')
@@ -81,8 +82,8 @@ def setup_logging():
     return logger
 
 def load_config():
-    """Memuat konfigurasi dari channels.json, keywords.json, dan summary_keywords.json."""
-    global FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, SUMMARY_CHANNELS, IMAGE_CHANNELS, KEYWORDS, SUMMARY_KEYWORDS
+    """Memuat konfigurasi dari channels.json, keywords.json, summary_keywords.json, dan blocked_keywords.json."""
+    global FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, SUMMARY_CHANNELS, IMAGE_CHANNELS, KEYWORDS, SUMMARY_KEYWORDS, BLOCKED_KEYWORDS
     try:
         with open('channels.json', 'r') as f:
             channels_data = json.load(f)
@@ -118,6 +119,15 @@ def load_config():
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
         logger.error(f"Error loading summary_keywords.json: {str(e)}")
         SUMMARY_KEYWORDS = []
+
+    try:
+        with open('blocked_keywords.json', 'r') as f:
+            blocked_keywords_data = json.load(f)
+            BLOCKED_KEYWORDS = [str(kw).strip() for kw in blocked_keywords_data.get('BLOCKED_KEYWORDS', [])]
+            logger.info(f"Loaded blocked keywords: {BLOCKED_KEYWORDS}")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Error loading blocked_keywords.json: {str(e)}")
+        BLOCKED_KEYWORDS = []
 
 # Inisialisasi saat modul diimpor
 logger = setup_logging()

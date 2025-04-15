@@ -60,12 +60,10 @@ async def handle_failed_message(message, media_path=None, retry_count=0, max_ret
         await failed_message_queue.put((message, full_reason))
         return
 
-    # Delay acak antara 1-5 menit (60-300 detik)
     delay = random.uniform(60, 300)
     logger.info(f"Pesan gagal, menunggu {delay:.2f} detik sebelum retry ke-{retry_count + 1}: {message[:50]}...")
     await asyncio.sleep(delay)
     
-    # Tambahkan kembali ke antrian utama
     await message_queue.put((message, media_path))
     logger.info(f"Pesan ditambahkan kembali ke antrian utama untuk retry: {message[:50]}...")
 
@@ -85,7 +83,6 @@ async def discord_worker():
     }
 
     async with aiohttp.ClientSession() as session:
-        # Validasi akses thread saat startup
         if not await validate_thread_access(session, headers):
             logger.critical("Bot tidak memiliki akses ke thread Discord. Periksa izin bot atau thread ID di .env.")
             await failed_message_queue.put(("", "Startup gagal: Bot tidak memiliki akses ke thread Discord."))
@@ -97,7 +94,7 @@ async def discord_worker():
             logger.info(f"Mengambil pesan dari antrian: {message[:50]}... (media: {media_path})")
 
             payload = {
-                "content": message[:2000],  # Batasi 2000 karakter sesuai Discord
+                "content": message[:2000],
                 "nonce": str(int(time.time() * 1000)),
                 "tts": False,
                 "flags": 0
@@ -109,7 +106,6 @@ async def discord_worker():
 
             try:
                 if media_path and os.path.exists(media_path):
-                    # Kirim pesan dengan lampiran
                     form = aiohttp.FormData()
                     form.add_field("payload_json", json.dumps(payload))
                     form.add_field("file", open(media_path, "rb"), filename=os.path.basename(media_path), content_type="image/jpeg")
@@ -127,7 +123,7 @@ async def discord_worker():
                             retry_after = int(response.headers.get("Retry-After", 5))
                             logger.warning(f"Rate limit tercapai. Menunggu {retry_after} detik...")
                             await asyncio.sleep(retry_after)
-                            await message_queue.put((message, media_path))  # Tambahkan kembali ke antrian
+                            await message_queue.put((message, media_path))
                         elif response.status == 400 and "blocked" in response_text.lower():
                             logger.warning(f"Pesan diblokir oleh server Discord: {message[:50]}...")
                             await handle_failed_message(message, media_path, retry_count=0, reason="Pesan diblokir oleh server")
@@ -136,7 +132,6 @@ async def discord_worker():
                             logger.critical(f"Gagal mengirim pesan ke Discord: {reason}")
                             await handle_failed_message(message, media_path, retry_count=0, reason=reason)
                 else:
-                    # Kirim pesan tanpa lampiran
                     async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
                         response_text = await response.text()
                         logger.info(f"Discord response: {response.status} - {response_text}")
@@ -150,7 +145,7 @@ async def discord_worker():
                             retry_after = int(response.headers.get("Retry-After", 5))
                             logger.warning(f"Rate limit tercapai. Menunggu {retry_after} detik...")
                             await asyncio.sleep(retry_after)
-                            await message_queue.put((message, None))  # Tambahkan kembali ke antrian
+                            await message_queue.put((message, None))
                         elif response.status == 400 and "blocked" in response_text.lower():
                             logger.warning(f"Pesan diblokir oleh server Discord: {message[:50]}...")
                             await handle_failed_message(message, retry_count=0, reason="Pesan diblokir oleh server")
