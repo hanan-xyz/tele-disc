@@ -1,7 +1,7 @@
 import aiohttp
 import asyncio
 
-DISCORD_AUTH_TOKEN = "OTg3MzQ1MTAyMzIwMDQyMDA0.G71_td.2N6peozOjyj-ZaXPZqho8WWZlpJRZBdCHzcD3w"
+DISCORD_AUTH_TOKEN = ""
 
 async def test_token():
     headers = {"Authorization": DISCORD_AUTH_TOKEN}
