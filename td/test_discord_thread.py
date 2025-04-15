@@ -2,8 +2,8 @@
 import aiohttp
 import asyncio
 
-DISCORD_AUTH_TOKEN = "OTg3MzQ1MTAyMzIwMDQyMDA0.G71_td.2N6peozOjyj-ZaXPZqho8WWZlpJRZBdCHzcD3w"  # Ganti dengan token Anda
-DISCORD_THREAD_ID = "1359690390646816880"
+DISCORD_AUTH_TOKEN = ""  # Ganti dengan token Anda
+DISCORD_THREAD_ID = ""
 
 async def test_thread_access():
     url = f"https://discord.com/api/v10/channels/{DISCORD_THREAD_ID}"
